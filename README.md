@@ -1,6 +1,6 @@
 # Go Ubiquitous
 Sixth project of Android Developer Nanodegree course (Udacity).
-Go Ubiquitous project allows you to display weather data on WatchFace for your Android Wearable.
+Go Ubiquitous project allows you to display weather data via WatchFace on Android Wearable devices.
 
 ## Features
 * Display WatchFace (date & time)
