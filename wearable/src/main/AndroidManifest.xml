@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.wear">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.android.sunshine">
 
     <uses-feature android:name="android.hardware.type.watch" />
 
@@ -14,9 +15,9 @@
             <meta-data android:name="android.service.wallpaper"
                 android:resource="@xml/watch_face" />
             <meta-data android:name="com.google.android.wearable.watchface.preview"
-                android:resource="@drawable/preview_digital" />
+                android:resource="@drawable/preview_sunshine" />
             <meta-data android:name="com.google.android.wearable.watchface.preview_circular"
-                android:resource="@drawable/preview_digital_circular" />
+                android:resource="@drawable/preview_sunshine" />
 
             <intent-filter>
                 <action android:name="android.service.wallpaper.WallpaperService" />
