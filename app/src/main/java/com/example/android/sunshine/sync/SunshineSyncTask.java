@@ -19,12 +19,14 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.text.format.DateUtils;
+import android.util.Log;
 
 import com.example.android.sunshine.data.SunshinePreferences;
 import com.example.android.sunshine.data.WeatherContract;
 import com.example.android.sunshine.utilities.NetworkUtils;
 import com.example.android.sunshine.utilities.NotificationUtils;
 import com.example.android.sunshine.utilities.OpenWeatherJsonUtils;
+import com.example.android.sunshine.utilities.WearUtils;
 
 import java.net.URL;
 
@@ -104,9 +106,11 @@ public class SunshineSyncTask {
                     NotificationUtils.notifyUserOfNewWeather(context);
                 }
 
-            /* If the code reaches this point, we have successfully performed our sync */
+                /* If the code reaches this point, we have successfully performed our sync */
 
             }
+            WearUtils wearUtils = new WearUtils(context);
+            wearUtils.updateWeatherForWear();
 
         } catch (Exception e) {
             /* Server probably invalid */

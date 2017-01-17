@@ -1,19 +1,3 @@
-/*
- * Copyright (C) 2014 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package com.example.wear;
 
 import android.content.BroadcastReceiver;
@@ -21,6 +5,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Resources;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -29,253 +14,113 @@ import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
+import android.support.v4.content.ContextCompat;
 import android.support.wearable.watchface.CanvasWatchFaceService;
 import android.support.wearable.watchface.WatchFaceStyle;
+import android.util.Log;
 import android.view.SurfaceHolder;
 import android.view.WindowInsets;
-import android.widget.Toast;
+
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.ResultCallback;
+import com.google.android.gms.wearable.DataApi;
+import com.google.android.gms.wearable.DataEvent;
+import com.google.android.gms.wearable.DataEventBuffer;
+import com.google.android.gms.wearable.DataItem;
+import com.google.android.gms.wearable.DataMap;
+import com.google.android.gms.wearable.DataMapItem;
+import com.google.android.gms.wearable.MessageApi;
+import com.google.android.gms.wearable.Wearable;
 
 import java.lang.ref.WeakReference;
+import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Digital watch face with seconds. In ambient mode, the seconds aren't displayed. On devices with
- * low-bit ambient mode, the text is drawn without anti-aliasing in ambient mode.
- */
-public class SunshineWatchface extends CanvasWatchFaceService {
+public class SunshineWatchFace extends CanvasWatchFaceService {
+    /**
+     * Update rate in milliseconds for active mode (non-ambient).
+     */
+    private static final long ACTIVE_INTERVAL_MS = TimeUnit.SECONDS.toMillis(1);
+    private static final Typeface BOLD_TYPEFACE =
+            Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD);
     private static final Typeface NORMAL_TYPEFACE =
             Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
-
-    /**
-     * Update rate in milliseconds for interactive mode. We update once a second since seconds are
-     * displayed in interactive mode.
-     */
-    private static final long INTERACTIVE_UPDATE_RATE_MS = TimeUnit.SECONDS.toMillis(1);
-
-    /**
-     * Handler message id for updating the time periodically in interactive mode.
-     */
-    private static final int MSG_UPDATE_TIME = 0;
+    private static final String COLON_STRING = ":";
+    private static final String TAG = "SunshineWatchFace";
 
     @Override
     public Engine onCreateEngine() {
+        /* provide your watch face implementation */
         return new Engine();
     }
 
-    private static class EngineHandler extends Handler {
-        private final WeakReference<SunshineWatchface.Engine> mWeakReference;
+    /* implement service callback methods */
+    private class Engine extends CanvasWatchFaceService.Engine implements GoogleApiClient.ConnectionCallbacks, DataApi.DataListener, GoogleApiClient.OnConnectionFailedListener {
+        static final int MSG_UPDATE_TIME = 0;
+        static final String WEATHER_DATA_PATH = "/WEATHER_DATA_PATH";
+        static final String WEATHER_DATA_ID = "WEATHER_DATA_ID";
+        static final String WEATHER_DATA_ICON = "WEATHER_DATA_ICON";
+        static final String WEATHER_DATA_HIGH = "WEATHER_DATA_HIGH";
+        static final String WEATHER_DATA_LOW = "WEATHER_DATA_LOW";
 
-        public EngineHandler(SunshineWatchface.Engine reference) {
-            mWeakReference = new WeakReference<>(reference);
-        }
+        Calendar calendar;
+        private float mYOffset;
+        private float mLineHeight;
+        private float mXOffset;
 
-        @Override
-        public void handleMessage(Message msg) {
-            SunshineWatchface.Engine engine = mWeakReference.get();
-            if (engine != null) {
-                switch (msg.what) {
+        // device features
+        boolean lowBitAmbient;
+        boolean burnInProtection;
+
+        // graphic objects
+        Paint timePaint;
+        Paint datePaint;
+        Paint degreeMaxPaint;
+        Paint degreeMinPaint;
+        Paint dividerPaint;
+        Bitmap weatherStatusBitmap;
+
+        // handler to update the time once a second in interactive mode
+        final Handler mUpdateTimeHandler = new Handler() {
+            @Override
+            public void handleMessage(Message message) {
+                switch (message.what) {
                     case MSG_UPDATE_TIME:
-                        engine.handleUpdateTimeMessage();
+                        invalidate();
+                        if (shouldTimerBeRunning()) {
+                            long timeMs = System.currentTimeMillis();
+                            long delayMs =
+                                    ACTIVE_INTERVAL_MS - (timeMs % ACTIVE_INTERVAL_MS);
+                            mUpdateTimeHandler.sendEmptyMessageDelayed(MSG_UPDATE_TIME, delayMs);
+                        }
                         break;
                 }
             }
-        }
-    }
+        };
 
-    private class Engine extends CanvasWatchFaceService.Engine {
-        final Handler mUpdateTimeHandler = new EngineHandler(this);
-        boolean mRegisteredTimeZoneReceiver = false;
-        Paint mBackgroundPaint;
-        Paint mTextPaint;
-        boolean mAmbient;
-        Calendar mCalendar;
+        // receiver to update the time zone
         final BroadcastReceiver mTimeZoneReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
-                mCalendar.setTimeZone(TimeZone.getDefault());
+                calendar.setTimeZone(TimeZone.getDefault());
                 invalidate();
             }
         };
-        float mXOffset;
-        float mYOffset;
 
         /**
-         * Whether the display supports fewer bits for each color in ambient mode. When true, we
-         * disable anti-aliasing in ambient mode.
+         * Unregistering an unregistered receiver throws an exception. Keep track of the
+         * registration state to prevent that.
          */
-        boolean mLowBitAmbient;
+        private boolean mRegisteredReceiver = false;
 
-        @Override
-        public void onCreate(SurfaceHolder holder) {
-            super.onCreate(holder);
-
-            setWatchFaceStyle(new WatchFaceStyle.Builder(SunshineWatchface.this)
-                    .setCardPeekMode(WatchFaceStyle.PEEK_MODE_VARIABLE)
-                    .setBackgroundVisibility(WatchFaceStyle.BACKGROUND_VISIBILITY_INTERRUPTIVE)
-                    .setShowSystemUiTime(false)
-                    .setAcceptsTapEvents(true)
-                    .build());
-            Resources resources = SunshineWatchface.this.getResources();
-            mYOffset = resources.getDimension(R.dimen.digital_y_offset);
-
-            mBackgroundPaint = new Paint();
-            mBackgroundPaint.setColor(resources.getColor(R.color.background));
-
-            mTextPaint = new Paint();
-            mTextPaint = createTextPaint(resources.getColor(R.color.digital_text));
-
-            mCalendar = Calendar.getInstance();
-        }
-
-        @Override
-        public void onDestroy() {
-            mUpdateTimeHandler.removeMessages(MSG_UPDATE_TIME);
-            super.onDestroy();
-        }
-
-        private Paint createTextPaint(int textColor) {
-            Paint paint = new Paint();
-            paint.setColor(textColor);
-            paint.setTypeface(NORMAL_TYPEFACE);
-            paint.setAntiAlias(true);
-            return paint;
-        }
-
-        @Override
-        public void onVisibilityChanged(boolean visible) {
-            super.onVisibilityChanged(visible);
-
-            if (visible) {
-                registerReceiver();
-
-                // Update time zone in case it changed while we weren't visible.
-                mCalendar.setTimeZone(TimeZone.getDefault());
-                invalidate();
-            } else {
-                unregisterReceiver();
-            }
-
-            // Whether the timer should be running depends on whether we're visible (as well as
-            // whether we're in ambient mode), so we may need to start or stop the timer.
-            updateTimer();
-        }
-
-        private void registerReceiver() {
-            if (mRegisteredTimeZoneReceiver) {
-                return;
-            }
-            mRegisteredTimeZoneReceiver = true;
-            IntentFilter filter = new IntentFilter(Intent.ACTION_TIMEZONE_CHANGED);
-            SunshineWatchface.this.registerReceiver(mTimeZoneReceiver, filter);
-        }
-
-        private void unregisterReceiver() {
-            if (!mRegisteredTimeZoneReceiver) {
-                return;
-            }
-            mRegisteredTimeZoneReceiver = false;
-            SunshineWatchface.this.unregisterReceiver(mTimeZoneReceiver);
-        }
-
-        @Override
-        public void onApplyWindowInsets(WindowInsets insets) {
-            super.onApplyWindowInsets(insets);
-
-            // Load resources that have alternate values for round watches.
-            Resources resources = SunshineWatchface.this.getResources();
-            boolean isRound = insets.isRound();
-            mXOffset = resources.getDimension(isRound
-                    ? R.dimen.digital_x_offset_round : R.dimen.digital_x_offset);
-            float textSize = resources.getDimension(isRound
-                    ? R.dimen.digital_text_size_round : R.dimen.digital_text_size);
-
-            mTextPaint.setTextSize(textSize);
-        }
-
-        @Override
-        public void onPropertiesChanged(Bundle properties) {
-            super.onPropertiesChanged(properties);
-            mLowBitAmbient = properties.getBoolean(PROPERTY_LOW_BIT_AMBIENT, false);
-        }
-
-        @Override
-        public void onTimeTick() {
-            super.onTimeTick();
-            invalidate();
-        }
-
-        @Override
-        public void onAmbientModeChanged(boolean inAmbientMode) {
-            super.onAmbientModeChanged(inAmbientMode);
-            if (mAmbient != inAmbientMode) {
-                mAmbient = inAmbientMode;
-                if (mLowBitAmbient) {
-                    mTextPaint.setAntiAlias(!inAmbientMode);
-                }
-                invalidate();
-            }
-
-            // Whether the timer should be running depends on whether we're visible (as well as
-            // whether we're in ambient mode), so we may need to start or stop the timer.
-            updateTimer();
-        }
-
-        /**
-         * Captures tap event (and tap type) and toggles the background color if the user finishes
-         * a tap.
-         */
-        @Override
-        public void onTapCommand(int tapType, int x, int y, long eventTime) {
-            switch (tapType) {
-                case TAP_TYPE_TOUCH:
-                    // The user has started touching the screen.
-                    break;
-                case TAP_TYPE_TOUCH_CANCEL:
-                    // The user has started a different gesture or otherwise cancelled the tap.
-                    break;
-                case TAP_TYPE_TAP:
-                    // The user has completed the tap gesture.
-                    // TODO: Add code to handle the tap gesture.
-                    Toast.makeText(getApplicationContext(), R.string.message, Toast.LENGTH_SHORT)
-                            .show();
-                    break;
-            }
-            invalidate();
-        }
-
-        @Override
-        public void onDraw(Canvas canvas, Rect bounds) {
-            // Draw the background.
-            if (isInAmbientMode()) {
-                canvas.drawColor(Color.BLACK);
-            } else {
-                canvas.drawRect(0, 0, bounds.width(), bounds.height(), mBackgroundPaint);
-            }
-
-            // Draw H:MM in ambient mode or H:MM:SS in interactive mode.
-            long now = System.currentTimeMillis();
-            mCalendar.setTimeInMillis(now);
-
-            String text = mAmbient
-                    ? String.format("%d:%02d", mCalendar.get(Calendar.HOUR),
-                    mCalendar.get(Calendar.MINUTE))
-                    : String.format("%d:%02d:%02d", mCalendar.get(Calendar.HOUR),
-                    mCalendar.get(Calendar.MINUTE), mCalendar.get(Calendar.SECOND));
-            canvas.drawText(text, mXOffset, mYOffset, mTextPaint);
-        }
-
-        /**
-         * Starts the {@link #mUpdateTimeHandler} timer if it should be running and isn't currently
-         * or stops it if it shouldn't be running but currently is.
-         */
-        private void updateTimer() {
-            mUpdateTimeHandler.removeMessages(MSG_UPDATE_TIME);
-            if (shouldTimerBeRunning()) {
-                mUpdateTimeHandler.sendEmptyMessage(MSG_UPDATE_TIME);
-            }
-        }
+        private GoogleApiClient client = new GoogleApiClient.Builder(SunshineWatchFace.this).addApi(Wearable.API).addConnectionCallbacks(this).addOnConnectionFailedListener(this).build();
+        private String mWeather = "no data";
+        private int mWeatherId;
 
         /**
          * Returns whether the {@link #mUpdateTimeHandler} timer should be running. The timer should
@@ -285,17 +130,201 @@ public class SunshineWatchface extends CanvasWatchFaceService {
             return isVisible() && !isInAmbientMode();
         }
 
-        /**
-         * Handle updating the time periodically in interactive mode.
-         */
-        private void handleUpdateTimeMessage() {
+        @Override
+        public void onCreate(SurfaceHolder holder) {
+            super.onCreate(holder);
+            /* initialize your watch face */
+            setWatchFaceStyle(new WatchFaceStyle.Builder(SunshineWatchFace.this)
+                    .setCardPeekMode(WatchFaceStyle.PEEK_MODE_VARIABLE)
+                    .setBackgroundVisibility(WatchFaceStyle.BACKGROUND_VISIBILITY_INTERRUPTIVE)
+                    .setShowSystemUiTime(false)
+                    .build());
+
+            client.connect();
+
+            Resources resources = getResources();
+            mYOffset = resources.getDimension(R.dimen.fit_y_offset);
+            mLineHeight = resources.getDimension(R.dimen.fit_line_height);
+
+            timePaint = createTextPaint(Color.WHITE, NORMAL_TYPEFACE);
+            datePaint = createTextPaint(ContextCompat.getColor(SunshineWatchFace.this, R.color.text_color_70), NORMAL_TYPEFACE);
+            dividerPaint = createTextPaint(ContextCompat.getColor(SunshineWatchFace.this, R.color.text_color_70), NORMAL_TYPEFACE);
+            degreeMaxPaint = createTextPaint(Color.WHITE, NORMAL_TYPEFACE);
+            degreeMinPaint = createTextPaint(ContextCompat.getColor(SunshineWatchFace.this, R.color.text_color_70), NORMAL_TYPEFACE);
+            calendar = Calendar.getInstance();
+        }
+
+        private Paint createTextPaint(int textColor, Typeface typeface) {
+            Paint paint = new Paint();
+            paint.setColor(textColor);
+            paint.setTypeface(typeface);
+            paint.setAntiAlias(true);
+            return paint;
+        }
+
+        @Override
+        public void onDestroy() {
+            mUpdateTimeHandler.removeMessages(MSG_UPDATE_TIME);
+            super.onDestroy();
+        }
+
+        @Override
+        public void onPropertiesChanged(Bundle properties) {
+            super.onPropertiesChanged(properties);
+            /* get device features (burn-in, low-bit ambient) */
+            lowBitAmbient = properties.getBoolean(PROPERTY_LOW_BIT_AMBIENT, false);
+            burnInProtection = properties.getBoolean(PROPERTY_BURN_IN_PROTECTION,
+                    false);
+        }
+
+        @Override
+        public void onTimeTick() {
+            super.onTimeTick();
+            /* the time changed */
             invalidate();
-            if (shouldTimerBeRunning()) {
-                long timeMs = System.currentTimeMillis();
-                long delayMs = INTERACTIVE_UPDATE_RATE_MS
-                        - (timeMs % INTERACTIVE_UPDATE_RATE_MS);
-                mUpdateTimeHandler.sendEmptyMessageDelayed(MSG_UPDATE_TIME, delayMs);
+        }
+
+        @Override
+        public void onAmbientModeChanged(boolean inAmbientMode) {
+            super.onAmbientModeChanged(inAmbientMode);
+            /* the wearable switched between modes */
+            if (lowBitAmbient) {
+                boolean antiAlias = !inAmbientMode;
+                timePaint.setAntiAlias(antiAlias);
+                degreeMaxPaint.setAntiAlias(antiAlias);
+                degreeMinPaint.setAntiAlias(antiAlias);
+                dividerPaint.setAntiAlias(antiAlias);
+                datePaint.setAntiAlias(antiAlias);
             }
+            invalidate();
+            updateTimer();
+        }
+
+        @Override
+        public void onApplyWindowInsets(WindowInsets insets) {
+            super.onApplyWindowInsets(insets);
+            // Load resources that have alternate values for round watches.
+            Resources resources = SunshineWatchFace.this.getResources();
+            boolean isRound = insets.isRound();
+            mXOffset = resources.getDimension(isRound
+                    ? R.dimen.fit_x_offset_round : R.dimen.fit_x_offset);
+            float textSize = resources.getDimension(isRound
+                    ? R.dimen.fit_text_size_round : R.dimen.fit_text_size);
+
+            timePaint.setTextSize(textSize);
+            degreeMaxPaint.setTextSize(resources.getDimension(R.dimen.small_txt_size));
+            degreeMinPaint.setTextSize(resources.getDimension(R.dimen.small_txt_size));
+            dividerPaint.setTextSize(textSize);
+            datePaint.setTextSize(resources.getDimension(R.dimen.small_txt_size));
+        }
+
+        @Override
+        public void onDraw(Canvas canvas, Rect bounds) {
+            /* draw your watch face */
+            float x = mXOffset;
+            float y = mYOffset;
+            int midPos = (canvas.getWidth() / 2);
+
+            canvas.drawColor(ContextCompat.getColor(SunshineWatchFace.this, R.color.background));
+            calendar.setTimeInMillis(System.currentTimeMillis());
+
+            String hourString = formatTwoDigitNumber(calendar.get(Calendar.HOUR_OF_DAY));
+            String minuteString = formatTwoDigitNumber(calendar.get(Calendar.MINUTE));
+            String time = hourString + COLON_STRING + minuteString;
+            canvas.drawText(time, midPos - (timePaint.measureText(time) / 2), y, timePaint);
+            y = y + mLineHeight;
+            SimpleDateFormat dateFormat = new SimpleDateFormat("ccc, LLL dd yyyy");
+            String date = dateFormat.format(calendar.getTime()).toUpperCase();
+            canvas.drawText(date, midPos - (datePaint.measureText(date) / 2), y, datePaint);
+            y = y + mLineHeight;
+            canvas.drawLine(midPos - getResources().getDimension(R.dimen.divider_leg), y, midPos + getResources().getDimension(R.dimen.divider_leg), y, dividerPaint);
+            y = y + mLineHeight;
+            canvas.drawText(mWeather, midPos - (degreeMaxPaint.measureText(date) / 2), y, degreeMaxPaint);
+
+        }
+
+        private String formatTwoDigitNumber(int number) {
+            return String.format("%02d", number);
+        }
+
+        @Override
+        public void onVisibilityChanged(boolean visible) {
+            super.onVisibilityChanged(visible);
+            /* the watch face became visible or invisible */
+            if (visible && !mRegisteredReceiver) {
+                mRegisteredReceiver = true;
+                SunshineWatchFace.this.registerReceiver(mTimeZoneReceiver, new IntentFilter(Intent.ACTION_TIMEZONE_CHANGED));
+                calendar.setTimeZone(TimeZone.getDefault());
+            } else if (!visible && mRegisteredReceiver) {
+                mRegisteredReceiver = false;
+                SunshineWatchFace.this.unregisterReceiver(mTimeZoneReceiver);
+            }
+            // Whether the timer should be running depends on whether we're visible and
+            // whether we're in ambient mode, so we may need to start or stop the timer
+            updateTimer();
+        }
+
+        private void updateTimer() {
+            mUpdateTimeHandler.removeMessages(MSG_UPDATE_TIME);
+            if (shouldTimerBeRunning()) {
+                mUpdateTimeHandler.sendEmptyMessage(MSG_UPDATE_TIME);
+            }
+        }
+
+        @Override
+        public void onConnected(@Nullable Bundle bundle) {
+            Log.d(TAG, "onConnected: " + bundle);
+            // Now you can use the Data Layer API
+
+            Wearable.DataApi.addListener(client, Engine.this);
+            Wearable.MessageApi.sendMessage(client, "", "/messagePath", null)
+                    .setResultCallback(new ResultCallback<MessageApi.SendMessageResult>() {
+                        @Override
+                        public void onResult(@NonNull MessageApi.SendMessageResult sendMessageResult) {
+                            if (sendMessageResult.getStatus()
+                                    .isSuccess()) {
+                                Log.d("Wear", "Message Sent!");
+                            }
+                        }
+                    });
+        }
+
+        @Override
+        public void onConnectionSuspended(int i) {
+            Log.d(TAG, "onConnectionSuspended: " + i);
+
+        }
+
+        @Override
+        public void onDataChanged(DataEventBuffer dataEventBuffer) {
+            Log.d(TAG, "onDataChanged");
+            for (DataEvent event : dataEventBuffer) {
+                DataItem item = event.getDataItem();
+                if (WEATHER_DATA_PATH.equals(item.getUri().getPath())) {
+                    DataMap dataMap = DataMapItem.fromDataItem(item).getDataMap();
+
+                    String high = dataMap.getString(WEATHER_DATA_HIGH);
+                    mWeather = high;
+                    invalidate();
+//                    double low = dataMap.getDouble(WEATHER_DATA_LOW);
+//                    long id = dataMap.getLong(WEATHER_DATA_ID);
+
+//                    mWeather = (int) Math.round(high) + "/" +  (int) Math.round(low);
+//                    mWeatherId = (int) id;
+
+
+//                    SharedPreferences preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE);
+//                    SharedPreferences.Editor editor = preferences.edit();
+//                    editor.putString(KEY_WEATHER, mWeather);
+//                    editor.putInt(KEY_WEATHER_ID, mWeatherId);
+//                    editor.apply();
+                }
+            }
+        }
+
+        @Override
+        public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
+            Log.d(TAG, "onConnectionFailed: " + connectionResult);
         }
     }
 }
