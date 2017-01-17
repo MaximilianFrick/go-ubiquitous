@@ -9,7 +9,7 @@ Go Ubiquitous project allows you to display weather data via WatchFace on Androi
 
 On a code basis - [Sunshine project](https://github.com/udacity/ud851-Sunshine/tree/S12.04-Solution-ResourceQualifiers) - provided by Udacity, the goal was to create a wearable module and design und configure a Watchface (see Screenshot)
 
-## Screenshots
+## Screenshot
 
 <img width="20%" src="https://cloud.githubusercontent.com/assets/4439173/22030680/a72fb714-dcde-11e6-8692-a4656824b618.png" />
 
